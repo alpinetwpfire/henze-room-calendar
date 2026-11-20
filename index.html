@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Henze Center Community Room Availability</title>
+<style>
+  /* Month grid that also reads as a list on phones. Sized to sit in an iframe on the
+     township Room Rentals page. Light only, to match that page. */
+  :root {
+    --bg: #ffffff; --ink: #1f2933; --dim: #5f6b76; --line: #d9dee3; --past: #f3f4f6;
+    --booked: #9b2226; --booked-bg: #fbe9ea; --today: #1f4e79;
+    --font: "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font); font-size: 15px; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 12px 12px 16px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .nav { display: flex; align-items: center; gap: 6px; }
+  .nav button { font: inherit; border: 1px solid var(--line); background: #fff; color: var(--ink); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+  .nav button:disabled { opacity: .4; cursor: default; }
+  .nav button:focus-visible { outline: 2px solid var(--today); outline-offset: 1px; }
+  .month { font-weight: 600; min-width: 150px; text-align: center; font-size: 16px; }
+  .legend { display: flex; gap: 14px; align-items: center; font-size: 13px; color: var(--dim); margin-bottom: 8px; flex-wrap: wrap; }
+  .chip { display: inline-block; background: var(--booked-bg); color: var(--booked); border-left: 3px solid var(--booked); border-radius: 3px; padding: 1px 5px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+  .dow { font-size: 12px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .5px; padding: 6px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #fafbfc; }
+  .day { min-height: 78px; padding: 5px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 3px; }
+  .day .n { font-size: 13px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .day.other { background: #fafbfc; }
+  .day.other .n { opacity: .45; }
+  .day.past { background: var(--past); }
+  .day.past .chip { opacity: .55; }
+  .day.today .n { color: #fff; background: var(--today); border-radius: 10px; padding: 0 6px; align-self: flex-start; font-weight: 600; }
+  .list { display: none; }
+  .note { font-size: 13px; color: var(--dim); margin-top: 10px; line-height: 1.45; }
+  .err { color: var(--booked); font-weight: 600; }
+  @media (max-width: 620px) {
+    .grid { display: none; }
+    .list { display: block; border-top: 1px solid var(--line); }
+    .list .row { display: flex; gap: 10px; padding: 8px 2px; border-bottom: 1px solid var(--line); align-items: baseline; }
+    .list .d { width: 92px; flex: none; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .list .t { display: flex; flex-wrap: wrap; gap: 4px; }
+    .list .empty { padding: 12px 2px; color: var(--dim); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Henze Center Community Room</h1>
+    <div class="nav">
+      <button id="prev" type="button" aria-label="Previous month">&lsaquo; Prev</button>
+      <span class="month" id="month" aria-live="polite"></span>
+      <button id="next" type="button" aria-label="Next month">Next &rsaquo;</button>
+    </div>
+  </header>
+  <div class="legend"><span><span class="chip">6:00 PM to 10:00 PM</span> Booked</span><span>Open times are not shown. Rental hours are 8:00 AM to 9:00 PM.</span></div>
+  <div class="grid" id="grid" aria-label="Booked times by day"></div>
+  <div class="list" id="list"></div>
+  <p class="note" id="note">Loading booked times...</p>
+</div>
+<script>
+(function () {
+  var DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  var booked = {}, updated = null, view, minMonth, maxMonth;
+
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function key(y, m, d) { return y + "-" + pad(m + 1) + "-" + pad(d); }
+  function t12(hm) {
+    var p = hm.split(":"), h = +p[0], m = p[1];
+    if (h === 24) return "midnight";
+    var ap = h >= 12 ? "PM" : "AM", h12 = h % 12 === 0 ? 12 : h % 12;
+    return h12 + ":" + m + " " + ap;
+  }
+  function label(b) { return (b.start === "00:00" && b.end === "24:00") ? "Booked all day" : t12(b.start) + " to " + t12(b.end); }
+  function chip(b) { var s = document.createElement("span"); s.className = "chip"; s.textContent = label(b); return s; }
+  function todayKey() { var t = new Date(); return key(t.getFullYear(), t.getMonth(), t.getDate()); }
+
+  function render() {
+    var y = view.getFullYear(), m = view.getMonth(), tk = todayKey();
+    document.getElementById("month").textContent = MONTHS[m] + " " + y;
+    var mi = y * 12 + m;
+    document.getElementById("prev").disabled = mi <= minMonth;
+    document.getElementById("next").disabled = mi >= maxMonth;
+
+    var grid = document.getElementById("grid"); grid.innerHTML = "";
+    DOW.forEach(function (d) { var h = document.createElement("div"); h.className = "dow"; h.textContent = d; grid.appendChild(h); });
+    var first = new Date(y, m, 1), start = new Date(y, m, 1 - first.getDay());
+    for (var i = 0; i < 42; i++) {
+      var d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+      if (i >= 35 && d.getMonth() !== m) break;
+      var k = key(d.getFullYear(), d.getMonth(), d.getDate());
+      var cell = document.createElement("div");
+      cell.className = "day" + (d.getMonth() !== m ? " other" : "") + (k < tk ? " past" : "") + (k === tk ? " today" : "");
+      var n = document.createElement("span"); n.className = "n"; n.textContent = d.getDate(); cell.appendChild(n);
+      (booked[k] || []).forEach(function (b) { cell.appendChild(chip(b)); });
+      if (booked[k]) cell.setAttribute("aria-label", d.toDateString() + ": " + booked[k].map(label).join(", "));
+      grid.appendChild(cell);
+    }
+
+    var list = document.getElementById("list"); list.innerHTML = "";
+    var days = new Date(y, m + 1, 0).getDate(), any = false;
+    for (var dd = 1; dd <= days; dd++) {
+      var kk = key(y, m, dd);
+      if (!booked[kk] || kk < tk) continue;
+      any = true;
+      var row = document.createElement("div"); row.className = "row";
+      var dl = document.createElement("span"); dl.className = "d"; dl.textContent = DOW[new Date(y, m, dd).getDay()] + " " + (m + 1) + "/" + dd;
+      var tl = document.createElement("span"); tl.className = "t";
+      booked[kk].forEach(function (b) { tl.appendChild(chip(b)); });
+      row.appendChild(dl); row.appendChild(tl); list.appendChild(row);
+    }
+    if (!any) { var e = document.createElement("div"); e.className = "empty"; e.textContent = "No booked times this month."; list.appendChild(e); }
+  }
+
+  function setNote(text, isErr) {
+    var note = document.getElementById("note"); note.textContent = "";
+    var s = document.createElement("span"); if (isErr) s.className = "err"; s.textContent = text; note.appendChild(s);
+    if (!isErr) note.appendChild(document.createTextNode(" A date is not reserved until you receive a signed rental agreement."));
+  }
+
+  document.getElementById("prev").addEventListener("click", function () { view = new Date(view.getFullYear(), view.getMonth() - 1, 1); render(); });
+  document.getElementById("next").addEventListener("click", function () { view = new Date(view.getFullYear(), view.getMonth() + 1, 1); render(); });
+
+  var now = new Date(); view = new Date(now.getFullYear(), now.getMonth(), 1);
+  minMonth = now.getFullYear() * 12 + now.getMonth(); maxMonth = minMonth + 17;
+  render();
+
+  fetch("bookings.json?_=" + Math.floor(Date.now() / 600000), { cache: "no-store" })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function (j) {
+      (j.booked || []).forEach(function (b) { (booked[b.date] = booked[b.date] || []).push(b); });
+      updated = j.updated ? new Date(j.updated) : null;
+      render();
+      var when = updated ? updated.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) + ", " +
+        updated.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : "unknown";
+      var stale = updated && (Date.now() - updated.getTime()) > 3 * 86400000;
+      setNote(stale ? "Booked times were last updated " + when + " and may be out of date. Call the Fire Department to confirm a date." :
+        "Booked times as of " + when + ". Updated daily.", !!stale);
+    })
+    .catch(function () { setNote("Booked times could not be loaded. Call the Fire Department to check a date.", true); });
+})();
+</script>
+</body>
+</html>
